@@ -26,12 +26,12 @@ class SendImage:
 
     def send_images(self, images, url, key, seed, callback):
         names = []
-        for i, image in enumerate(images):
+        for index, image in enumerate(images):
             bytes = BytesIO()
             i = 255. * image.cpu().numpy()
             img = Image.fromarray(numpy.clip(i, 0, 255).astype(numpy.uint8))
             img.save(bytes, format="PNG")
-            name = str(seed) + ".png"
+            name = str(seed) + "-" + str(index) + ".png"
             path  = "/" + name
             requests.post(url+path, headers={"key": key}, data=bytes.getvalue())
             names.append(name)
