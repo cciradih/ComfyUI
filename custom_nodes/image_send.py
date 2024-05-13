@@ -2,6 +2,7 @@ from PIL import Image
 from io import BytesIO
 import numpy
 import requests
+import time
 
 class SendImage:
     @classmethod
@@ -26,12 +27,12 @@ class SendImage:
 
     def send_images(self, images, url, key, seed, callback):
         names = []
-        for index, image in enumerate(images):
+        for image in images:
             bytes = BytesIO()
             i = 255. * image.cpu().numpy()
             img = Image.fromarray(numpy.clip(i, 0, 255).astype(numpy.uint8))
             img.save(bytes, format="PNG")
-            name = str(seed) + "-" + str(index) + ".png"
+            name = str(seed) + "-" + str(time.time_ns()) + ".png"
             path  = "/" + name
             requests.post(url+path, headers={"key": key}, data=bytes.getvalue())
             names.append(name)
