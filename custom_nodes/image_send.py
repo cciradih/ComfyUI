@@ -34,9 +34,9 @@ class SendImage:
             img.save(bytes, format="PNG")
             name = str(seed) + "-" + str(time.time_ns()) + ".png"
             path  = "/" + name
-            requests.post(url+path, headers={"key": key}, data=bytes.getvalue())
+            requests.post(url + path, headers={"key": key}, data=bytes.getvalue())
             names.append(name)
-        requests.post(callback, json=names)
+        requests.post(callback, headers={"key": key}, json=names)
         return {}
 
 NODE_CLASS_MAPPINGS = {
