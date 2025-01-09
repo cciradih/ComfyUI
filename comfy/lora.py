@@ -33,7 +33,7 @@ LORA_CLIP_MAP = {
 }
 
 
-def load_lora(lora, to_load):
+def load_lora(lora, to_load, log_missing=True):
     patch_dict = {}
     loaded_keys = set()
     for x in to_load:
@@ -62,6 +62,7 @@ def load_lora(lora, to_load):
         diffusers_lora = "{}_lora.up.weight".format(x)
         diffusers2_lora = "{}.lora_B.weight".format(x)
         diffusers3_lora = "{}.lora.up.weight".format(x)
+        mochi_lora = "{}.lora_B".format(x)
         transformers_lora = "{}.lora_linear_layer.up.weight".format(x)
         A_name = None
 
@@ -80,6 +81,10 @@ def load_lora(lora, to_load):
         elif diffusers3_lora in lora.keys():
             A_name = diffusers3_lora
             B_name = "{}.lora.down.weight".format(x)
+            mid_name = None
+        elif mochi_lora in lora.keys():
+            A_name = mochi_lora
+            B_name = "{}.lora_A".format(x)
             mid_name = None
         elif transformers_lora in lora.keys():
             A_name = transformers_lora
@@ -208,9 +213,10 @@ def load_lora(lora, to_load):
             patch_dict[to_load[x]] = ("set", (set_weight,))
             loaded_keys.add(set_weight_name)
 
-    for x in lora.keys():
-        if x not in loaded_keys:
-            logging.warning("lora key not loaded: {}".format(x))
+    if log_missing:
+        for x in lora.keys():
+            if x not in loaded_keys:
+                logging.warning("lora key not loaded: {}".format(x))
 
     return patch_dict
 
@@ -338,13 +344,26 @@ def model_lora_keys_unet(model, key_map={}):
                 key_lora = "lycoris_{}".format(k[:-len(".weight")].replace(".", "_")) #simpletuner lycoris format
                 key_map[key_lora] = to
 
-
     if isinstance(model, comfy.model_base.AuraFlow): #Diffusers lora AuraFlow
         diffusers_keys = comfy.utils.auraflow_to_diffusers(model.model_config.unet_config, output_prefix="diffusion_model.")
         for k in diffusers_keys:
             if k.endswith(".weight"):
                 to = diffusers_keys[k]
                 key_lora = "transformer.{}".format(k[:-len(".weight")]) #simpletrainer and probably regular diffusers lora format
+                key_map[key_lora] = to
+
+    if isinstance(model, comfy.model_base.PixArt):
+        diffusers_keys = comfy.utils.pixart_to_diffusers(model.model_config.unet_config, output_prefix="diffusion_model.")
+        for k in diffusers_keys:
+            if k.endswith(".weight"):
+                to = diffusers_keys[k]
+                key_lora = "transformer.{}".format(k[:-len(".weight")]) #default format
+                key_map[key_lora] = to
+
+                key_lora = "base_model.model.{}".format(k[:-len(".weight")]) #diffusers training script
+                key_map[key_lora] = to
+
+                key_lora = "unet.base_model.model.{}".format(k[:-len(".weight")]) #old reference peft script
                 key_map[key_lora] = to
 
     if isinstance(model, comfy.model_base.HunyuanDiT):
@@ -361,6 +380,24 @@ def model_lora_keys_unet(model, key_map={}):
                 key_map["transformer.{}".format(k[:-len(".weight")])] = to #simpletrainer and probably regular diffusers flux lora format
                 key_map["lycoris_{}".format(k[:-len(".weight")].replace(".", "_"))] = to #simpletrainer lycoris
                 key_map["lora_transformer_{}".format(k[:-len(".weight")].replace(".", "_"))] = to #onetrainer
+
+    if isinstance(model, comfy.model_base.GenmoMochi):
+        for k in sdk:
+            if k.startswith("diffusion_model.") and k.endswith(".weight"): #Official Mochi lora format
+                key_lora = k[len("diffusion_model."):-len(".weight")]
+                key_map["{}".format(key_lora)] = k
+
+    if isinstance(model, comfy.model_base.HunyuanVideo):
+        for k in sdk:
+            if k.startswith("diffusion_model.") and k.endswith(".weight"):
+                # diffusion-pipe lora format
+                key_lora = k
+                key_lora = key_lora.replace("_mod.lin.", "_mod.linear.").replace("_attn.qkv.", "_attn_qkv.").replace("_attn.proj.", "_attn_proj.")
+                key_lora = key_lora.replace("mlp.0.", "mlp.fc1.").replace("mlp.2.", "mlp.fc2.")
+                key_lora = key_lora.replace(".modulation.lin.", ".modulation.linear.")
+                key_lora = key_lora[len("diffusion_model."):-len(".weight")]
+                key_map["transformer.{}".format(key_lora)] = k
+                key_map["diffusion_model.{}".format(key_lora)] = k  # Old loras
 
     return key_map
 
@@ -418,7 +455,7 @@ def pad_tensor_to_shape(tensor: torch.Tensor, new_shape: list[int]) -> torch.Ten
 
     return padded_tensor
 
-def calculate_weight(patches, weight, key, intermediate_dtype=torch.float32):
+def calculate_weight(patches, weight, key, intermediate_dtype=torch.float32, original_weights=None):
     for p in patches:
         strength = p[0]
         v = p[1]
@@ -460,6 +497,11 @@ def calculate_weight(patches, weight, key, intermediate_dtype=torch.float32):
                     weight += function(strength * comfy.model_management.cast_to_device(diff, weight.device, weight.dtype))
         elif patch_type == "set":
             weight.copy_(v[0])
+        elif patch_type == "model_as_lora":
+            target_weight: torch.Tensor = v[0]
+            diff_weight = comfy.model_management.cast_to_device(target_weight, weight.device, intermediate_dtype) - \
+                          comfy.model_management.cast_to_device(original_weights[key][0][0], weight.device, intermediate_dtype)
+            weight += function(strength * comfy.model_management.cast_to_device(diff_weight, weight.device, weight.dtype))
         elif patch_type == "lora": #lora/locon
             mat1 = comfy.model_management.cast_to_device(v[0], weight.device, intermediate_dtype)
             mat2 = comfy.model_management.cast_to_device(v[1], weight.device, intermediate_dtype)
